@@ -1,0 +1,22 @@
+<configuration name="whisper_asr.conf" description="">
+  <settings>
+  <!-- <param name="model" value="/opt/whisper/ggml-base.en.bin" /> -->
+    <param name="model" value="/opt/whisper/ggml-small.en.bin" />
+    <param name="default-languale" value="en" />
+
+    <param name="vad-enable" value="true" />
+    <param name="vad-silence-ms" value="500" />
+    <param name="vad-voice-ms" value="200" />
+    <param name="vad-threshold" value="100" />
+
+    <param name="chunk-size-max-sec" value="15" />
+
+    <param name="whisper-n-threads" value="4" />
+    <param name="whisper-n-processors" value="2" />
+    <param name="whisper-max-tokens" value="32" />
+    <param name="whisper-speed-up" value="false" />
+    <param name="whisper-translate" value="false" />
+    <param name="whisper-use-parallel" value="false" />    
+
+  </settings>
+</configuration>
