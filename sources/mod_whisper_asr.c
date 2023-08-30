@@ -15,79 +15,90 @@ SWITCH_MODULE_DEFINITION(mod_whisper_asr, mod_whisper_asr_load, mod_whisper_asr_
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 static void *SWITCH_THREAD_FUNC whisper_io_thread(switch_thread_t *thread, void *obj) {
     volatile wasr_ctx_t *_ref = (wasr_ctx_t *) obj;
-    wasr_ctx_t *wasr_ctx = (wasr_ctx_t *) _ref;
+    wasr_ctx_t *asr_ctx = (wasr_ctx_t *) _ref;
     switch_byte_t *chunk_buffer = NULL;
+    switch_buffer_t *transcript_buffer = NULL;
     uint32_t chunk_buf_offset = 0, chunk_buf_size = 0;
     uint8_t fl_do_transcript = false;
     void *pop = NULL;
 
-    switch_mutex_lock(wasr_ctx->mutex);
-    wasr_ctx->deps++;
-    switch_mutex_unlock(wasr_ctx->mutex);
+    switch_mutex_lock(asr_ctx->mutex);
+    asr_ctx->deps++;
+    switch_mutex_unlock(asr_ctx->mutex);
+
+    if(switch_buffer_create_dynamic(&transcript_buffer, 1024, 1024, 16384) != SWITCH_STATUS_SUCCESS) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "transcript_buffer == NULL\n");
+        asr_ctx->fl_abort = true; goto out;
+    }
 
     while(true) {
-        if(globals.fl_shutdown || wasr_ctx->fl_destroyed ) {
+        if(globals.fl_shutdown || asr_ctx->fl_destroyed || asr_ctx->fl_abort) {
             break;
         }
-        if(chunk_buf_size == 0 || chunk_buffer == NULL) {
-            switch_mutex_lock(wasr_ctx->mutex);
-            chunk_buf_size = wasr_ctx->chunk_buf_size;
-            chunk_buffer = wasr_ctx->chunk_buf;
-            switch_mutex_unlock(wasr_ctx->mutex);
+
+        if(chunk_buf_size == 0) {
+            switch_mutex_lock(asr_ctx->mutex);
+            chunk_buf_size = asr_ctx->chunk_buf_size;
+
+            if((chunk_buffer = switch_core_alloc(asr_ctx->pool, chunk_buf_size)) == NULL) {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail (chunk_buf)\n");
+                asr_ctx->fl_abort = true;
+            }
+            switch_mutex_unlock(asr_ctx->mutex);
             goto timer_next;
         }
 
         fl_do_transcript = false;
-        if(whisper_client_is_ready(wasr_ctx)) {
-            while(switch_queue_trypop(wasr_ctx->q_audio, &pop) == SWITCH_STATUS_SUCCESS) {
-                xdata_buffer_t *audio_buffer = (xdata_buffer_t *)pop;
-                if(globals.fl_shutdown || wasr_ctx->fl_destroyed ) {
+        while(switch_queue_trypop(asr_ctx->q_audio, &pop) == SWITCH_STATUS_SUCCESS) {
+            xdata_buffer_t *audio_buffer = (xdata_buffer_t *)pop;
+            if(globals.fl_shutdown || asr_ctx->fl_destroyed ) { break; }
+            if(audio_buffer && audio_buffer->len) {
+                memcpy((chunk_buffer + chunk_buf_offset), audio_buffer->data, audio_buffer->len);
+                chunk_buf_offset += audio_buffer->len;
+                if(chunk_buf_offset >= chunk_buf_size) {
+                    chunk_buf_offset = chunk_buf_size;
+                    fl_do_transcript = true;
                     break;
                 }
-                if(audio_buffer && audio_buffer->len) {
-                    memcpy((chunk_buffer + chunk_buf_offset), audio_buffer->data, audio_buffer->len);
-                    chunk_buf_offset += audio_buffer->len;
-                    if(chunk_buf_offset >= chunk_buf_size) {
-                        chunk_buf_offset = chunk_buf_size;
-                        fl_do_transcript = true;
-                        break;
+            }
+            xdata_buffer_free(audio_buffer);
+        }
+        if(!fl_do_transcript) {
+            fl_do_transcript = (chunk_buf_offset > 0 && asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING);
+        }
+
+        if(fl_do_transcript) {
+            switch_buffer_zero(transcript_buffer);
+            if(whisper_client_transcript_buffer(asr_ctx, chunk_buffer, chunk_buf_offset, transcript_buffer) == SWITCH_STATUS_SUCCESS) {
+                uint32_t tlen = 0;
+                const void *ptr = NULL;
+
+                if((tlen = switch_buffer_peek_zerocopy(transcript_buffer, &ptr)) > 0) {
+                    xdata_buffer_t *tbuff = NULL;
+                    if(xdata_buffer_alloc(&tbuff, (void *)ptr, tlen) == SWITCH_STATUS_SUCCESS) {
+                        if(switch_queue_trypush(asr_ctx->q_text, tbuff) == SWITCH_STATUS_SUCCESS) {
+                            switch_mutex_lock(asr_ctx->mutex);
+                            asr_ctx->transcript_results++;
+                            switch_mutex_unlock(asr_ctx->mutex);
+                        } else {
+                            xdata_buffer_free(tbuff);
+                        }
                     }
                 }
-                xdata_buffer_free(audio_buffer);
-            }
-            if(!fl_do_transcript) {
-                fl_do_transcript = (chunk_buf_offset > 0 && wasr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING);
-            }
-        }
-        if(fl_do_transcript) {
-            xdata_buffer_t *tbuff = NULL;
-            switch_byte_t *result_txt = NULL;
-            uint32_t result_len = 0;
-
-            if(whisper_client_transcript_buffer(wasr_ctx, chunk_buffer, chunk_buf_offset, &result_txt, &result_len) != SWITCH_STATUS_SUCCESS) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "transcript faild\n");
             }
             chunk_buf_offset = 0;
-
-            if(result_len > 0) {
-                if(xdata_buffer_alloc(&tbuff, result_txt, result_len) == SWITCH_STATUS_SUCCESS) {
-                    if(switch_queue_trypush(wasr_ctx->q_text, tbuff) == SWITCH_STATUS_SUCCESS) {
-                        switch_mutex_lock(wasr_ctx->mutex);
-                        wasr_ctx->transcript_results++;
-                        switch_mutex_unlock(wasr_ctx->mutex);
-                    } else {
-                        xdata_buffer_free(tbuff);
-                    }
-                }
-            }
         }
         timer_next:
         switch_yield(10000);
     }
 out:
-    switch_mutex_lock(wasr_ctx->mutex);
-    if(wasr_ctx->deps > 0) wasr_ctx->deps--;
-    switch_mutex_unlock(wasr_ctx->mutex);
+    if(transcript_buffer) {
+        switch_buffer_destroy(&transcript_buffer);
+    }
+
+    switch_mutex_lock(asr_ctx->mutex);
+    if(asr_ctx->deps > 0) asr_ctx->deps--;
+    switch_mutex_unlock(asr_ctx->mutex);
 
     thread_finished();
 
@@ -97,7 +108,7 @@ out:
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int samplerate, const char *dest, switch_asr_flag_t *flags) {
     switch_status_t status = SWITCH_STATUS_SUCCESS;
-    wasr_ctx_t *wasr_ctx = NULL;
+    wasr_ctx_t *asr_ctx = NULL;
 
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "asr_open: codec=%s, samplerate=%i, dest=%s, vad=%i\n", codec, samplerate, dest, (globals.fl_vad_enabled));
 
@@ -107,87 +118,92 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
     }
 
     // pre-conf
-    wasr_ctx = switch_core_alloc(ah->memory_pool, sizeof(wasr_ctx_t));
-    wasr_ctx->pool = ah->memory_pool;
-    wasr_ctx->samplerate = samplerate;
-    wasr_ctx->ptime = 0;
-    wasr_ctx->channels = 1;
-    wasr_ctx->lang = switch_core_strdup(ah->memory_pool, globals.default_language);
+    asr_ctx = switch_core_alloc(ah->memory_pool, sizeof(wasr_ctx_t));
+    asr_ctx->pool = ah->memory_pool;
+    asr_ctx->samplerate = samplerate;
+    asr_ctx->ptime = 0;
+    asr_ctx->channels = 1;
+    asr_ctx->lang = switch_core_strdup(ah->memory_pool, globals.default_language);
 
-   if((status = switch_mutex_init(&wasr_ctx->mutex, SWITCH_MUTEX_NESTED, ah->memory_pool)) != SWITCH_STATUS_SUCCESS) {
+    ah->private_info = asr_ctx;
+
+   if((status = switch_mutex_init(&asr_ctx->mutex, SWITCH_MUTEX_NESTED, ah->memory_pool)) != SWITCH_STATUS_SUCCESS) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail\n");
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
-    switch_queue_create(&wasr_ctx->q_audio, QUEUE_SIZE, ah->memory_pool);
-    switch_queue_create(&wasr_ctx->q_text, QUEUE_SIZE, ah->memory_pool);
+    switch_queue_create(&asr_ctx->q_audio, QUEUE_SIZE, ah->memory_pool);
+    switch_queue_create(&asr_ctx->q_text, QUEUE_SIZE, ah->memory_pool);
 
     // VAD
-    wasr_ctx->fl_vad_enabled = globals.fl_vad_enabled;
-    wasr_ctx->frame_len = 0;
-    wasr_ctx->vad_fr_buf = NULL;
-    wasr_ctx->vad_fr_buf_size = 0; // will be calculated in the feed stage
+    asr_ctx->fl_vad_enabled = globals.fl_vad_enabled;
+    asr_ctx->frame_len = 0;
+    asr_ctx->vad_buf = NULL;
+    asr_ctx->vad_buf_size = 0; // will be calculated in the feed stage
 
-    if((wasr_ctx->vad = switch_vad_init(wasr_ctx->samplerate, wasr_ctx->channels)) == NULL) {
+    if((asr_ctx->vad = switch_vad_init(asr_ctx->samplerate, asr_ctx->channels)) == NULL) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't init VAD\n");
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
 
-    switch_vad_set_mode(wasr_ctx->vad, -1);
-    if(globals.vad_silence_ms > 0) { switch_vad_set_param(wasr_ctx->vad, "silence_ms", globals.vad_silence_ms); }
-    if(globals.vad_voice_ms > 0) { switch_vad_set_param(wasr_ctx->vad, "voice_ms", globals.vad_voice_ms); }
-    if(globals.vad_threshold > 0) { switch_vad_set_param(wasr_ctx->vad, "thresh", globals.vad_threshold); }
+    switch_vad_set_mode(asr_ctx->vad, -1);
+    if(globals.vad_silence_ms > 0) { switch_vad_set_param(asr_ctx->vad, "silence_ms", globals.vad_silence_ms); }
+    if(globals.vad_voice_ms > 0) { switch_vad_set_param(asr_ctx->vad, "voice_ms", globals.vad_voice_ms); }
+    if(globals.vad_threshold > 0) { switch_vad_set_param(asr_ctx->vad, "thresh", globals.vad_threshold); }
 
     // chunk buffer
-    wasr_ctx->chunk_buf = NULL;
-    wasr_ctx->chunk_buf_size = 0;
+    asr_ctx->chunk_buf_size = 0;
 
-    // WhisperClient
-    status = whisper_client_init(wasr_ctx);
-    if(status != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't init whisper_client\n");
+    // whisper
+    if(whisper_client_init(asr_ctx) != SWITCH_STATUS_SUCCESS) {
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
+    asr_ctx->whisper_max_tokens = globals.whisper_max_tokens;
+    asr_ctx->whisper_n_threads = globals.whisper_n_threads;
+    asr_ctx->whisper_n_processors = globals.whisper_n_processors;
+    asr_ctx->whisper_speed_up = globals.whisper_speed_up;
+    asr_ctx->whisper_translate = globals.whisper_translate;
+    asr_ctx->whisper_single_segment = globals.whisper_single_segment;
+    asr_ctx->whisper_use_parallel = globals.whisper_use_parallel;
 
-    ah->private_info = wasr_ctx;
-
-    // start a helper thread
-    thread_launch(wasr_ctx->pool, whisper_io_thread, wasr_ctx);
+    // helper thread
+    thread_launch(asr_ctx->pool, whisper_io_thread, asr_ctx);
 out:
     return status;
 }
 
 static switch_status_t asr_close(switch_asr_handle_t *ah, switch_asr_flag_t *flags) {
-    wasr_ctx_t *wasr_ctx = (wasr_ctx_t *) ah->private_info;
+    wasr_ctx_t *asr_ctx = (wasr_ctx_t *) ah->private_info;
     int32_t wc = 0;
-    assert(wasr_ctx != NULL);
 
-    wasr_ctx->fl_aborted = true;
-    wasr_ctx->fl_destroyed = true;
+    assert(asr_ctx != NULL);
+
+    asr_ctx->fl_abort= true;
+    asr_ctx->fl_destroyed = true;
     while(true) {
-        if(wasr_ctx->deps <= 0 && whisper_client_is_busy(wasr_ctx) == false) {
-            break;
-        }
-        switch_yield(100000);
+        if(asr_ctx->deps <= 0) { break; }
         if(++wc % 100 == 0) {
-            if(wasr_ctx->deps > 0) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "wasr_ctx is used (deps=%u)!\n", wasr_ctx->deps);
-            }
-            if(whisper_client_is_busy(wasr_ctx)) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "whisper_client is busy!\n");
+            if(asr_ctx->deps > 0) {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "asr_ctx is used (deps=%u)!\n", asr_ctx->deps);
             }
             wc = 0;
         }
+        switch_yield(100000);
     }
 
-    whisper_client_destroy(wasr_ctx);
-
-    if(wasr_ctx->q_audio) {
-        xdata_buffer_queue_clean(wasr_ctx->q_audio);
-        switch_queue_term(wasr_ctx->q_audio);
+    if(asr_ctx->q_audio) {
+        xdata_buffer_queue_clean(asr_ctx->q_audio);
+        switch_queue_term(asr_ctx->q_audio);
     }
-    if(wasr_ctx->q_text) {
-        xdata_buffer_queue_clean(wasr_ctx->q_text);
-        switch_queue_term(wasr_ctx->q_text);
+    if(asr_ctx->q_text) {
+        xdata_buffer_queue_clean(asr_ctx->q_text);
+        switch_queue_term(asr_ctx->q_text);
+    }
+    if(asr_ctx->vad) {
+        switch_vad_destroy(&asr_ctx->vad);
+    }
+
+    if(asr_ctx->whisper_client) {
+        whisper_client_destroy(asr_ctx);
     }
 
     switch_set_flag(ah, SWITCH_ASR_FLAG_CLOSED);
@@ -196,59 +212,57 @@ static switch_status_t asr_close(switch_asr_handle_t *ah, switch_asr_flag_t *fla
 }
 
 static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned int data_len, switch_asr_flag_t *flags) {
-    wasr_ctx_t *wasr_ctx = (wasr_ctx_t *) ah->private_info;
+    wasr_ctx_t *asr_ctx = (wasr_ctx_t *) ah->private_info;
     switch_status_t status = SWITCH_STATUS_SUCCESS;
     switch_vad_state_t vad_state = 0;
     uint8_t fl_has_audio = false;
 
-    assert(wasr_ctx != NULL);
+    assert(asr_ctx != NULL);
 
     if(switch_test_flag(ah, SWITCH_ASR_FLAG_CLOSED)) {
         return SWITCH_STATUS_BREAK;
     }
-    if(wasr_ctx->fl_pause) {
+    if(asr_ctx->fl_abort) {
+        return SWITCH_STATUS_BREAK;
+    }
+    if(asr_ctx->fl_pause) {
         return SWITCH_STATUS_SUCCESS;
     }
 
-    if(data_len > 0 && wasr_ctx->frame_len == 0) {
-        switch_mutex_lock(wasr_ctx->mutex);
+    if(data_len > 0 && asr_ctx->frame_len == 0) {
+        switch_mutex_lock(asr_ctx->mutex);
+        asr_ctx->frame_len = data_len;
+        asr_ctx->ptime = (data_len / sizeof(int16_t)) / (asr_ctx->samplerate / 1000);
+        asr_ctx->chunk_buf_size = ((globals.chunk_size_sec * 1000) * data_len) / asr_ctx->ptime;
+        asr_ctx->vad_buf_size = (asr_ctx->frame_len * VAD_STORE_FRAMES);
 
-        wasr_ctx->frame_len = data_len;
-        wasr_ctx->ptime = (data_len / sizeof(int16_t)) / (wasr_ctx->samplerate / 1000);
-        wasr_ctx->chunk_buf_size = ((globals.chunk_size_max_sec * 1000) * data_len) / wasr_ctx->ptime;
-        wasr_ctx->vad_fr_buf_size = (wasr_ctx->frame_len * VAD_STORE_FRAMES);
-
-        if((wasr_ctx->vad_fr_buf = switch_core_alloc(ah->memory_pool, wasr_ctx->vad_fr_buf_size)) == NULL) {
-            wasr_ctx->vad_fr_buf_size = 0; // force disable
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail (vad_fr_buf)\n");
+        if((asr_ctx->vad_buf = switch_core_alloc(ah->memory_pool, asr_ctx->vad_buf_size)) == NULL) {
+            asr_ctx->vad_buf_size = 0; // force disable
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail (vad_buf)\n");
         }
-        if((wasr_ctx->chunk_buf = switch_core_alloc(ah->memory_pool, wasr_ctx->chunk_buf_size)) == NULL) {
-            wasr_ctx->chunk_buf_size = 0; // force disable
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail (chunk_buf)\n");
-        }
+        switch_mutex_unlock(asr_ctx->mutex);
 
-        switch_mutex_unlock(wasr_ctx->mutex);
-        //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "frame_len=%u, ptime=%u, vad_buffer_size=%u, chunk_buf_size=%u\n", data_len, wasr_ctx->ptime, wasr_ctx->vad_fr_buf_size, wasr_ctx->chunk_buf_size);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "frame_len=%u, ptime=%u, vad_buffer_size=%u, chunk_buf_size=%u\n", data_len, asr_ctx->ptime, asr_ctx->vad_buf_size, asr_ctx->chunk_buf_size);
     }
 
-    if(wasr_ctx->fl_vad_enabled) {
-        if(wasr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING || (wasr_ctx->vad_state == vad_state && vad_state == SWITCH_VAD_STATE_NONE)) {
-            if(wasr_ctx->vad_fr_buf_size && wasr_ctx->frame_len >= data_len) {
-                wasr_ctx->vad_fr_buf_ofs = (wasr_ctx->vad_fr_buf_ofs >= wasr_ctx->vad_fr_buf_size) ? 0 : wasr_ctx->vad_fr_buf_ofs;
-                memcpy((void *)(wasr_ctx->vad_fr_buf + wasr_ctx->vad_fr_buf_ofs), data, MIN(wasr_ctx->frame_len, data_len));
-                wasr_ctx->vad_fr_buf_ofs += wasr_ctx->frame_len;
+    if(asr_ctx->fl_vad_enabled) {
+        if(asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING || (asr_ctx->vad_state == vad_state && vad_state == SWITCH_VAD_STATE_NONE)) {
+            if(asr_ctx->vad_buf_size && asr_ctx->frame_len >= data_len) {
+                asr_ctx->vad_buf_ofs = (asr_ctx->vad_buf_ofs >= asr_ctx->vad_buf_size) ? 0 : asr_ctx->vad_buf_ofs;
+                memcpy((void *)(asr_ctx->vad_buf + asr_ctx->vad_buf_ofs), data, MIN(asr_ctx->frame_len, data_len));
+                asr_ctx->vad_buf_ofs += asr_ctx->frame_len;
             }
         }
-        vad_state = switch_vad_process(wasr_ctx->vad, (int16_t *)data, (data_len / sizeof(int16_t)) );
+        vad_state = switch_vad_process(asr_ctx->vad, (int16_t *)data, (data_len / sizeof(int16_t)) );
         if(vad_state == SWITCH_VAD_STATE_START_TALKING) {
-            wasr_ctx->vad_state = vad_state;
+            asr_ctx->vad_state = vad_state;
             fl_has_audio = true;
         } else if (vad_state == SWITCH_VAD_STATE_STOP_TALKING) {
-            switch_vad_reset(wasr_ctx->vad);
-            wasr_ctx->vad_state = vad_state;
+            switch_vad_reset(asr_ctx->vad);
+            asr_ctx->vad_state = vad_state;
             fl_has_audio = false;
         } else if (vad_state == SWITCH_VAD_STATE_TALKING) {
-            wasr_ctx->vad_state = vad_state;
+            asr_ctx->vad_state = vad_state;
             fl_has_audio = true;
         }
     } else {
@@ -257,26 +271,25 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
 
     if(fl_has_audio) {
         xdata_buffer_t *abuf = NULL;
-        // lost frames
-        if(vad_state == SWITCH_VAD_STATE_START_TALKING && wasr_ctx->vad_fr_buf_ofs > 0) {
-            wasr_ctx->vad_fr_buf_ofs -= (wasr_ctx->frame_len * VAD_RECOVER_FRAMES);
-            if(wasr_ctx->vad_fr_buf_ofs < 0 ) { wasr_ctx->vad_fr_buf_ofs = 0; }
-
-            for(int i = 0; i < VAD_RECOVER_FRAMES; i++) {
-                if(xdata_buffer_alloc(&abuf, (void *)(wasr_ctx->vad_fr_buf + wasr_ctx->vad_fr_buf_ofs), wasr_ctx->frame_len) == SWITCH_STATUS_SUCCESS) {
-                    if(switch_queue_trypush(wasr_ctx->q_audio, abuf) != SWITCH_STATUS_SUCCESS) {
-                        xdata_buffer_free(abuf);
-                        break;
+        if(asr_ctx->fl_vad_enabled) {
+            if(vad_state == SWITCH_VAD_STATE_START_TALKING && asr_ctx->vad_buf_ofs > 0) {
+                asr_ctx->vad_buf_ofs -= (asr_ctx->frame_len * VAD_RECOVER_FRAMES);
+                if(asr_ctx->vad_buf_ofs < 0 ) { asr_ctx->vad_buf_ofs = 0; }
+                for(int i = 0; i < VAD_RECOVER_FRAMES; i++) {
+                    if(xdata_buffer_alloc(&abuf, (void *)(asr_ctx->vad_buf + asr_ctx->vad_buf_ofs), asr_ctx->frame_len) == SWITCH_STATUS_SUCCESS) {
+                        if(switch_queue_trypush(asr_ctx->q_audio, abuf) != SWITCH_STATUS_SUCCESS) {
+                            xdata_buffer_free(abuf);
+                            break;
+                        }
                     }
+                    asr_ctx->vad_buf_ofs += asr_ctx->frame_len;
+                    if(asr_ctx->vad_buf_ofs >= asr_ctx->vad_buf_size) { break; }
                 }
-                wasr_ctx->vad_fr_buf_ofs += wasr_ctx->frame_len;
-                if(wasr_ctx->vad_fr_buf_ofs >= wasr_ctx->vad_fr_buf_size) { break; }
+                asr_ctx->vad_buf_ofs = 0;
             }
-            wasr_ctx->vad_fr_buf_ofs = 0;
         }
-        // current frame
         if(xdata_buffer_alloc(&abuf, data, data_len) == SWITCH_STATUS_SUCCESS) {
-            if(switch_queue_trypush(wasr_ctx->q_audio, abuf) != SWITCH_STATUS_SUCCESS) {
+            if(switch_queue_trypush(asr_ctx->q_audio, abuf) != SWITCH_STATUS_SUCCESS) {
                 xdata_buffer_free(abuf);
             }
         }
@@ -286,22 +299,22 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
 }
 
 static switch_status_t asr_check_results(switch_asr_handle_t *ah, switch_asr_flag_t *flags) {
-    wasr_ctx_t *wasr_ctx = (wasr_ctx_t *) ah->private_info;
+    wasr_ctx_t *asr_ctx = (wasr_ctx_t *) ah->private_info;
     switch_status_t status = SWITCH_STATUS_FALSE;
 
-    assert(wasr_ctx != NULL);
+    assert(asr_ctx != NULL);
 
-    return (wasr_ctx->transcript_results > 0 ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE);
+    return (asr_ctx->transcript_results > 0 ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE);
 }
 
 static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, switch_asr_flag_t *flags) {
-    wasr_ctx_t *wasr_ctx = (wasr_ctx_t *) ah->private_info;
+    wasr_ctx_t *asr_ctx = (wasr_ctx_t *) ah->private_info;
     char *result = NULL;
     void *pop = NULL;
 
-    assert(wasr_ctx != NULL);
+    assert(asr_ctx != NULL);
 
-    if(switch_queue_trypop(wasr_ctx->q_text, &pop) == SWITCH_STATUS_SUCCESS) {
+    if(switch_queue_trypop(asr_ctx->q_text, &pop) == SWITCH_STATUS_SUCCESS) {
         xdata_buffer_t *tbuff = (xdata_buffer_t *)pop;
         if(tbuff->len > 0) {
             switch_zmalloc(result, tbuff->len + 1);
@@ -309,18 +322,19 @@ static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, s
         }
         xdata_buffer_free(tbuff);
 
-        switch_mutex_lock(wasr_ctx->mutex);
-        if(wasr_ctx->transcript_results > 0) wasr_ctx->transcript_results--;
-        switch_mutex_unlock(wasr_ctx->mutex);
+        switch_mutex_lock(asr_ctx->mutex);
+        if(asr_ctx->transcript_results > 0) asr_ctx->transcript_results--;
+        switch_mutex_unlock(asr_ctx->mutex);
     }
 
     *xmlstr = result;
     return (result ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE);
+    return SWITCH_STATUS_FALSE;
 }
 
 static switch_status_t asr_start_input_timers(switch_asr_handle_t *ah) {
-    wasr_ctx_t *wasr_ctx = (wasr_ctx_t *) ah->private_info;
-    assert(wasr_ctx != NULL);
+    wasr_ctx_t *asr_ctx = (wasr_ctx_t *) ah->private_info;
+    assert(asr_ctx != NULL);
 
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "ASR_START_INPUT_TIMER (todo)\n");
 
@@ -329,40 +343,50 @@ static switch_status_t asr_start_input_timers(switch_asr_handle_t *ah) {
 
 
 static switch_status_t asr_pause(switch_asr_handle_t *ah) {
-    wasr_ctx_t *wasr_ctx = (wasr_ctx_t *) ah->private_info;
-    assert(wasr_ctx != NULL);
+    wasr_ctx_t *asr_ctx = (wasr_ctx_t *) ah->private_info;
+    assert(asr_ctx != NULL);
 
-    if(!wasr_ctx->fl_pause) {
-        wasr_ctx->fl_pause = true;
+    if(!asr_ctx->fl_pause) {
+        asr_ctx->fl_pause = true;
     }
 
     return SWITCH_STATUS_SUCCESS;
 }
 
 static switch_status_t asr_resume(switch_asr_handle_t *ah) {
-    wasr_ctx_t *wasr_ctx = (wasr_ctx_t *) ah->private_info;
-    assert(wasr_ctx != NULL);
+    wasr_ctx_t *asr_ctx = (wasr_ctx_t *) ah->private_info;
+    assert(asr_ctx != NULL);
 
-    if(wasr_ctx->fl_pause) {
-        wasr_ctx->fl_pause = false;
+    if(asr_ctx->fl_pause) {
+        asr_ctx->fl_pause = false;
     }
 
     return SWITCH_STATUS_SUCCESS;
 }
 
 static void asr_text_param(switch_asr_handle_t *ah, char *param, const char *val) {
-    wasr_ctx_t *wasr_ctx = (wasr_ctx_t *) ah->private_info;
-    assert(wasr_ctx != NULL);
+    wasr_ctx_t *asr_ctx = (wasr_ctx_t *) ah->private_info;
+    assert(asr_ctx != NULL);
 
     if(strcasecmp(param, "vad") == 0) {
-        wasr_ctx->fl_vad_enabled = switch_true(val);
-        return;
+        if(val) asr_ctx->fl_vad_enabled = switch_true(val);
+    } else if(strcasecmp(param, "lang") == 0) {
+        if(val) asr_ctx->lang = switch_core_strdup(ah->memory_pool, val);
+    } else if(strcasecmp(param, "threads") == 0) {
+        if(val) asr_ctx->whisper_n_threads = atoi (val);
+    } else if(!strcasecmp(param, "processors")) {
+        if(val) asr_ctx->whisper_n_processors = atoi (val);
+    } else if(!strcasecmp(param, "max-tokens")) {
+        if(val) asr_ctx->whisper_max_tokens = atoi (val);
+    } else if(!strcasecmp(param, "speed-up")) {
+        if(val) asr_ctx->whisper_speed_up = switch_true(val);
+    } else if(!strcasecmp(param, "use-translate")) {
+        if(val) asr_ctx->whisper_translate = switch_true(val);
+    } else if(!strcasecmp(param, "use-single-segment")) {
+        if(val) asr_ctx->whisper_single_segment = switch_true(val);
+    } else if(!strcasecmp(param, "use-parallel")) {
+        if(val) asr_ctx->whisper_use_parallel = switch_true(val);
     }
-    if(strcasecmp(param, "lang") == 0) {
-        if(val) { wasr_ctx->lang = switch_core_strdup(ah->memory_pool, val); }
-    }
-
-    whisper_client_set_property(wasr_ctx, param, val);
 }
 
 static void asr_numeric_param(switch_asr_handle_t *ah, char *param, int val) {
@@ -404,33 +428,33 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_whisper_asr_load) {
             char *val = (char *) switch_xml_attr_soft(param, "value");
 
             if(!strcasecmp(var, "vad-silence-ms")) {
-                globals.vad_silence_ms = atoi (val);
+                if(val) globals.vad_silence_ms = atoi (val);
             } else if(!strcasecmp(var, "vad-voice-ms")) {
-                globals.vad_voice_ms = atoi (val);
+                if(val) globals.vad_voice_ms = atoi (val);
             } else if(!strcasecmp(var, "vad-threshold")) {
-                globals.vad_threshold = atoi (val);
+                if(val) globals.vad_threshold = atoi (val);
             } else if(!strcasecmp(var, "vad-enable")) {
-                globals.fl_vad_enabled = switch_true(val);
+                if(val) globals.fl_vad_enabled = switch_true(val);
             } else if(!strcasecmp(var, "default-language")) {
-                globals.default_language = switch_core_strdup(pool, val);
+                if(val) globals.default_language = switch_core_strdup(pool, val);
             } else if(!strcasecmp(var, "model")) {
-                globals.model_file = switch_core_strdup(pool, val);
-            } else if(!strcasecmp(var, "chunk-size-max-sec")) {
-                globals.chunk_size_max_sec = atoi (val);
+                if(val) globals.model_file = switch_core_strdup(pool, val);
+            } else if(!strcasecmp(var, "chunk-size-sec")) {
+                if(val) globals.chunk_size_sec = atoi (val);
             } else if(!strcasecmp(var, "whisper-n-threads")) {
-                globals.whisper_n_threads = atoi (val);
+                if(val) globals.whisper_n_threads = atoi (val);
             } else if(!strcasecmp(var, "whisper-max-tokens")) {
-                globals.whisper_tokens = atoi (val);
+                if(val) globals.whisper_max_tokens = atoi (val);
             } else if(!strcasecmp(var, "whisper-speed-up")) {
-                globals.whisper_speed_up = switch_true(val);
+                if(val) globals.whisper_speed_up = switch_true(val);
             } else if(!strcasecmp(var, "whisper-translate")) {
-                globals.whisper_translate = switch_true(val);
+                if(val) globals.whisper_translate = switch_true(val);
             } else if(!strcasecmp(var, "whisper-single-segment")) {
-                globals.whisper_single_segment = switch_true(val);
+                if(val) globals.whisper_single_segment = switch_true(val);
             } else if(!strcasecmp(var, "whisper-n-processors")) {
-                globals.whisper_n_processors = atoi (val);
+                if(val) globals.whisper_n_processors = atoi (val);
             } else if(!strcasecmp(var, "whisper-use-parallel")) {
-                globals.whisper_use_parallel = switch_true(val);
+                if(val) globals.whisper_use_parallel = switch_true(val);
             }
         }
     }
@@ -440,11 +464,11 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_whisper_asr_load) {
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
     if(switch_file_exists(globals.model_file, NULL) != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Model not found (%s)\n", globals.model_file);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Model not found: %s\n", globals.model_file);
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
-    if(!globals.chunk_size_max_sec) {
-        globals.chunk_size_max_sec = CHUNK_MAX_LEN_SEC;
+    if(!globals.chunk_size_sec) {
+        globals.chunk_size_sec = DEF_CHUNK_SIZE;
     }
 
     globals.default_language = globals.default_language != NULL ? globals.default_language : "en";
@@ -452,9 +476,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_whisper_asr_load) {
     globals.whisper_n_threads = globals.whisper_n_threads >= WHISPER_DEFAULT_THREADS ? globals.whisper_n_threads : WHISPER_DEFAULT_THREADS;
     globals.whisper_n_processors = globals.whisper_n_processors > 1 ? globals.whisper_n_processors : 1;
 
-    // -------------------------
     *module_interface = switch_loadable_module_create_module_interface(pool, modname);
-
     asr_interface = switch_loadable_module_create_interface(*module_interface, SWITCH_ASR_INTERFACE);
     asr_interface->interface_name = "whisper";
     asr_interface->asr_open = asr_open;

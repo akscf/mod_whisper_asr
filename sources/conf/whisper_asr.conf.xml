@@ -3,13 +3,12 @@
   <!-- <param name="model" value="/opt/whisper/ggml-base.en.bin" /> -->
     <param name="model" value="/opt/whisper/ggml-small.en.bin" />
     <param name="default-languale" value="en" />
+    <param name="chunk-size-sec" value="15" />
 
     <param name="vad-enable" value="true" />
     <param name="vad-silence-ms" value="500" />
     <param name="vad-voice-ms" value="200" />
     <param name="vad-threshold" value="100" />
-
-    <param name="chunk-size-max-sec" value="15" />
 
     <param name="whisper-n-threads" value="4" />
     <param name="whisper-n-processors" value="2" />

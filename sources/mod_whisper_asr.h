@@ -7,9 +7,6 @@
 #define MOD_WHISPER_ASR_H
 
 #include <switch.h>
-#include <switch_stun.h>
-#include <switch_curl.h>
-#include <switch_json.h>
 #include <speex/speex_resampler.h>
 #include <stdint.h>
 #include <string.h>
@@ -24,8 +21,8 @@
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
-#define VERSION             "1.0 (a1)"
-#define CHUNK_MAX_LEN_SEC   15 // sec
+#define VERSION             "1.0 (b2)"
+#define DEF_CHUNK_SIZE      15 // sec
 #define QUEUE_SIZE          32
 #define VAD_STORE_FRAMES    32
 #define VAD_RECOVER_FRAMES  20 // 15
@@ -39,7 +36,7 @@ typedef struct {
     const char              *model_file;
     const char              *default_language;
     uint32_t                active_threads;
-    uint32_t                chunk_size_max_sec;
+    uint32_t                chunk_size_sec;
     uint32_t                whisper_threads;
     uint32_t                whisper_tokens;
     uint32_t                vad_silence_ms;
@@ -62,16 +59,15 @@ typedef struct {
     switch_memory_pool_t    *pool;
     switch_vad_t            *vad;
     switch_vad_state_t      vad_state;
-    switch_byte_t           *vad_fr_buf;
-    switch_byte_t           *chunk_buf;
+    switch_byte_t           *vad_buf;
     switch_mutex_t          *mutex;
     switch_queue_t          *q_audio;
     switch_queue_t          *q_text;
     char                    *lang;
     void                    *whisper_client;
     int32_t                 transcript_results;
-    int32_t                 vad_fr_buf_ofs;
-    uint32_t                vad_fr_buf_size;
+    int32_t                 vad_buf_ofs;
+    uint32_t                vad_buf_size;
     uint32_t                chunk_buf_size;
     uint32_t                deps;
     uint32_t                samplerate;
@@ -81,7 +77,15 @@ typedef struct {
     uint8_t                 fl_pause;
     uint8_t                 fl_vad_enabled;
     uint8_t                 fl_destroyed;
-    uint8_t                 fl_aborted;
+    uint8_t                 fl_abort;
+    //
+    uint32_t                whisper_n_threads;
+    uint32_t                whisper_n_processors;
+    uint32_t                whisper_max_tokens;
+    uint32_t                whisper_speed_up;
+    uint32_t                whisper_translate;
+    uint32_t                whisper_single_segment;
+    uint32_t                whisper_use_parallel;
 } wasr_ctx_t;
 
 typedef struct {
