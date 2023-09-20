@@ -61,15 +61,15 @@ class WhisperClient {
             if(resampler) {
                 if(rsmp_buffer_size == 0) {
                     switch_mutex_lock(asr_ctx_ref->mutex);
-                    if(asr_ctx_ref->chunk_buf_size > 0 ) {
-                        rsmp_buffer_size = (WHISPER_SAMPLE_RATE * asr_ctx_ref->chunk_buf_size) / asr_ctx_ref->samplerate;
+                    if(asr_ctx_ref->chunk_buffer_size > 0 ) {
+                        rsmp_buffer_size = (WHISPER_SAMPLE_RATE * asr_ctx_ref->chunk_buffer_size) / asr_ctx_ref->samplerate;
                         float_buffer_size = (rsmp_buffer_size / sizeof(int16_t)) * sizeof(float);
 
-                        if((rsmp_buffer = (switch_byte_t *) switch_core_alloc(asr_ctx_ref->pool, rsmp_buffer_size)) == NULL) {
+                        if((rsmp_buffer = (switch_byte_t *) switch_core_alloc(asr_ctx_ref->whisper_thread_memory_pool, rsmp_buffer_size)) == NULL) {
                             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail (rsmp_buffer)\n");
                             rsmp_buffer_size = 0;
                         }
-                        if((float_buffer = (switch_byte_t *) switch_core_alloc(asr_ctx_ref->pool, float_buffer_size)) == NULL) {
+                        if((float_buffer = (switch_byte_t *) switch_core_alloc(asr_ctx_ref->whisper_thread_memory_pool, float_buffer_size)) == NULL) {
                             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail (float_buffer)\n");
                             float_buffer_size = 0;
                         }
@@ -77,7 +77,7 @@ class WhisperClient {
                     switch_mutex_unlock(asr_ctx_ref->mutex);
                     if(!rsmp_buffer_size || !float_buffer_size) { goto done; }
                 }
-                //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "DEC_RSMP: chunk_buf_size=%u, rsmp_buffer_size=%u, float_buffer_size=%u\n", asr_ctx_ref->chunk_buf_size, rsmp_buffer_size, float_buffer_size);
+                //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "DEC_RSMP: chunk_buffer_size=%u, rsmp_buffer_size=%u, float_buffer_size=%u\n", asr_ctx_ref->chunk_buffer_size, rsmp_buffer_size, float_buffer_size);
 
                 out_len = (rsmp_buffer_size / sizeof(int16_t));
                 speex_resampler_process_interleaved_int(resampler, (const spx_int16_t *) data, (spx_uint32_t *) &in_len, (spx_int16_t *)rsmp_buffer, &out_len);
@@ -85,9 +85,9 @@ class WhisperClient {
             } else {
                 if(float_buffer_size == 0) {
                     switch_mutex_lock(asr_ctx_ref->mutex);
-                    if(asr_ctx_ref->chunk_buf_size > 0 ) {
-                        float_buffer_size = (asr_ctx_ref->chunk_buf_size / sizeof(int16_t)) * sizeof(float);
-                        if((float_buffer = (switch_byte_t *) switch_core_alloc(asr_ctx_ref->pool, float_buffer_size)) == NULL) {
+                    if(asr_ctx_ref->chunk_buffer_size > 0 ) {
+                        float_buffer_size = (asr_ctx_ref->chunk_buffer_size / sizeof(int16_t)) * sizeof(float);
+                        if((float_buffer = (switch_byte_t *) switch_core_alloc(asr_ctx_ref->whisper_thread_memory_pool, float_buffer_size)) == NULL) {
                             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail (float_buffer)\n");
                             float_buffer_size = 0;
                         }
@@ -96,7 +96,7 @@ class WhisperClient {
                     if(!float_buffer_size) { goto done; }
                 }
 
-                //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "DEC_AS-IS: chunk_buf_size=%u, rsmp_buffer_size=%u, float_buffer_size=%u\n", asr_ctx_ref->chunk_buf_size, rsmp_buffer_size, float_buffer_size);
+                //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "DEC_AS-IS: chunk_buffer_size=%u, rsmp_buffer_size=%u, float_buffer_size=%u\n", asr_ctx_ref->chunk_buffer_size, rsmp_buffer_size, float_buffer_size);
 
                 out_len = in_len;
                 conv_i2f((int16_t *)data, (float *)float_buffer, in_len);
@@ -119,7 +119,7 @@ class WhisperClient {
                 wparams.encoder_begin_callback_user_data = asr_ctx_ref;
                 wparams.encoder_begin_callback = (whisper_encoder_begin_callback) WhisperClient::encoder_begin_cb;
 
-                //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "--> whisper-START\n");
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "--> whisper-START\n");
 
                 if(asr_ctx_ref->whisper_use_parallel) {
                     if(whisper_full_parallel(whisper_ctx, wparams, (float *)float_buffer, out_len, asr_ctx_ref->whisper_n_processors) != 0) {
@@ -133,7 +133,7 @@ class WhisperClient {
                     }
                 }
 
-                //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "--> whisper-END\n");
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "--> whisper-END\n");
 
                 if(asr_ctx_ref->fl_abort || asr_ctx_ref->fl_destroyed) {
                     goto done;

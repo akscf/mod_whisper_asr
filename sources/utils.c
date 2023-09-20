@@ -29,6 +29,29 @@ void thread_launch(switch_memory_pool_t *pool, switch_thread_start_t fun, void *
     return;
 }
 
+uint32_t asr_ctx_take(wasr_ctx_t *asr_ctx) {
+    uint32_t status = false;
+
+    if(!asr_ctx) { return false; }
+
+    switch_mutex_lock(asr_ctx->mutex);
+    if(asr_ctx->fl_destroyed == false) {
+        status = true;
+        asr_ctx->deps++;
+    }
+    switch_mutex_unlock(asr_ctx->mutex);
+
+    return status;
+}
+
+void asr_ctx_release(wasr_ctx_t *asr_ctx) {
+    switch_assert(asr_ctx);
+
+    switch_mutex_lock(asr_ctx->mutex);
+    if(asr_ctx->deps) { asr_ctx->deps--; }
+    switch_mutex_unlock(asr_ctx->mutex);
+}
+
 switch_status_t xdata_buffer_alloc(xdata_buffer_t **out, switch_byte_t *data, uint32_t data_len) {
     xdata_buffer_t *buf = NULL;
 
@@ -63,4 +86,17 @@ void xdata_buffer_queue_clean(switch_queue_t *queue) {
         if(data) { xdata_buffer_free((xdata_buffer_t *) data); }
     }
 }
+
+switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, uint32_t data_len) {
+    xdata_buffer_t *buff = NULL;
+
+    if(xdata_buffer_alloc(&buff, data, data_len) == SWITCH_STATUS_SUCCESS) {
+        if(switch_queue_trypush(queue, buff) == SWITCH_STATUS_SUCCESS) {
+            return SWITCH_STATUS_SUCCESS;
+        }
+        xdata_buffer_free(buff);
+    }
+    return SWITCH_STATUS_FALSE;
+}
+
 
