@@ -6,12 +6,15 @@
     <param name="chunk-size-sec" value="15" />
 
     <param name="vad-enable" value="true" />
+    <param name="vad-debug" value="true" />
     <param name="vad-silence-ms" value="500" />
     <param name="vad-voice-ms" value="200" />
     <param name="vad-threshold" value="100" />
 
-    <param name="whisper-n-threads" value="4" />
-    <param name="whisper-n-processors" value="2" />
+    <!-- for x5690 -->
+    <param name="whisper-n-threads" value="20" />
+    <param name="whisper-n-processors" value="4" />
+
     <param name="whisper-max-tokens" value="32" />
     <param name="whisper-speed-up" value="false" />
     <param name="whisper-translate" value="false" />

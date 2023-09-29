@@ -140,6 +140,7 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
     asr_ctx->frame_len = 0;
     asr_ctx->vad_buffer = NULL;
     asr_ctx->vad_buffer_size = 0; // will be calculated in the feed stage
+    asr_ctx->vad_stored_frames = 0;
 
     if((asr_ctx->vad = switch_vad_init(asr_ctx->samplerate, asr_ctx->channels)) == NULL) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't init VAD\n");
@@ -147,6 +148,7 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
     }
 
     switch_vad_set_mode(asr_ctx->vad, -1);
+    switch_vad_set_param(asr_ctx->vad, "debug", globals.fl_vad_debug);
     if(globals.vad_silence_ms > 0) { switch_vad_set_param(asr_ctx->vad, "silence_ms", globals.vad_silence_ms); }
     if(globals.vad_voice_ms > 0) { switch_vad_set_param(asr_ctx->vad, "voice_ms", globals.vad_voice_ms); }
     if(globals.vad_threshold > 0) { switch_vad_set_param(asr_ctx->vad, "thresh", globals.vad_threshold); }
@@ -231,24 +233,26 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
         asr_ctx->ptime = (data_len / sizeof(int16_t)) / (asr_ctx->samplerate / 1000);
         asr_ctx->chunk_buffer_size = ((globals.chunk_size_sec * 1000) * data_len) / asr_ctx->ptime;
         asr_ctx->vad_buffer_size = (asr_ctx->frame_len * VAD_STORE_FRAMES);
+        switch_mutex_unlock(asr_ctx->mutex);
 
         if((asr_ctx->vad_buffer = switch_core_alloc(ah->memory_pool, asr_ctx->vad_buffer_size)) == NULL) {
             asr_ctx->vad_buffer_size = 0; // force disable
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail (vad_buffer)\n");
         }
-        switch_mutex_unlock(asr_ctx->mutex);
 
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "frame_len=%u, ptime=%u, vad_bufferfer_size=%u, chunk_buffer_size=%u\n", data_len, asr_ctx->ptime, asr_ctx->vad_buffer_size, asr_ctx->chunk_buffer_size);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "frame_len=%u, ptime=%u, vad_buffer_size=%u, chunk_buffer_size=%u\n", data_len, asr_ctx->ptime, asr_ctx->vad_buffer_size, asr_ctx->chunk_buffer_size);
     }
 
-    if(asr_ctx->fl_vad_enabled) {
+    if(asr_ctx->fl_vad_enabled && asr_ctx->vad_buffer_size) {
         if(asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING || (asr_ctx->vad_state == vad_state && vad_state == SWITCH_VAD_STATE_NONE)) {
-            if(asr_ctx->vad_buffer_size && asr_ctx->frame_len >= data_len) {
-                asr_ctx->vad_buffer_ofs = (asr_ctx->vad_buffer_ofs >= asr_ctx->vad_buffer_size) ? 0 : asr_ctx->vad_buffer_ofs;
-                memcpy((void *)(asr_ctx->vad_buffer + asr_ctx->vad_buffer_ofs), data, MIN(asr_ctx->frame_len, data_len));
-                asr_ctx->vad_buffer_ofs += asr_ctx->frame_len;
+            if(asr_ctx->frame_len >= data_len) {
+                if(asr_ctx->vad_buffer_offs >= asr_ctx->vad_buffer_size) { asr_ctx->vad_buffer_offs = 0; asr_ctx->vad_stored_frames = 0; }
+                memcpy((void *)(asr_ctx->vad_buffer + asr_ctx->vad_buffer_offs), data, MIN(asr_ctx->frame_len, data_len));
+                asr_ctx->vad_buffer_offs += asr_ctx->frame_len;
+                asr_ctx->vad_stored_frames++;
             }
         }
+
         vad_state = switch_vad_process(asr_ctx->vad, (int16_t *)data, (data_len / sizeof(int16_t)) );
         if(vad_state == SWITCH_VAD_STATE_START_TALKING) {
             asr_ctx->vad_state = vad_state;
@@ -266,21 +270,34 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
     }
 
     if(fl_has_audio) {
-        if(asr_ctx->fl_vad_enabled) {
-            if(vad_state == SWITCH_VAD_STATE_START_TALKING && asr_ctx->vad_buffer_ofs > 0) {
-                asr_ctx->vad_buffer_ofs -= (asr_ctx->frame_len * VAD_RECOVER_FRAMES);
-                if(asr_ctx->vad_buffer_ofs < 0 ) { asr_ctx->vad_buffer_ofs = 0; }
-                for(int i = 0; i < VAD_RECOVER_FRAMES; i++) {
-                    if(xdata_buffer_push(asr_ctx->q_audio, (switch_byte_t *)(asr_ctx->vad_buffer + asr_ctx->vad_buffer_ofs), asr_ctx->frame_len) != SWITCH_STATUS_SUCCESS) {
-                        break;
-                    }
-                    asr_ctx->vad_buffer_ofs += asr_ctx->frame_len;
-                    if(asr_ctx->vad_buffer_ofs >= asr_ctx->vad_buffer_size) { break; }
-                }
-                asr_ctx->vad_buffer_ofs = 0;
+        if(vad_state == SWITCH_VAD_STATE_START_TALKING && asr_ctx->vad_buffer_offs > 0) {
+            xdata_buffer_t *tau_buf = NULL;
+            uint32_t tdata_len = 0;
+
+            if(asr_ctx->vad_stored_frames >= VAD_RECOVERY_FRAMES) { asr_ctx->vad_stored_frames = VAD_RECOVERY_FRAMES; }
+
+            asr_ctx->vad_buffer_offs -= (asr_ctx->vad_stored_frames * asr_ctx->frame_len);
+            if(asr_ctx->vad_buffer_offs < 0 ) { asr_ctx->vad_buffer_offs = 0; }
+
+            tdata_len = (asr_ctx->vad_stored_frames * asr_ctx->frame_len) + data_len;
+
+            switch_zmalloc(tau_buf, sizeof(xdata_buffer_t));
+            switch_malloc(tau_buf->data, tdata_len);
+            tau_buf->len = tdata_len;
+
+            tdata_len = (asr_ctx->vad_stored_frames * asr_ctx->frame_len);
+            memcpy(tau_buf->data, asr_ctx->vad_buffer + asr_ctx->vad_buffer_offs, tdata_len);
+            memcpy(tau_buf->data + tdata_len, data, data_len);
+
+            if(switch_queue_trypush(asr_ctx->q_audio, tau_buf) != SWITCH_STATUS_SUCCESS) {
+                xdata_buffer_free(tau_buf);
             }
+
+            asr_ctx->vad_stored_frames = 0;
+            asr_ctx->vad_buffer_offs = 0;
+        } else {
+            xdata_buffer_push(asr_ctx->q_audio, data, data_len);
         }
-        xdata_buffer_push(asr_ctx->q_audio, data, data_len);
     }
 
     return SWITCH_STATUS_SUCCESS;
@@ -426,6 +443,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_whisper_asr_load) {
                 if(val) globals.vad_threshold = atoi (val);
             } else if(!strcasecmp(var, "vad-enable")) {
                 if(val) globals.fl_vad_enabled = switch_true(val);
+            } else if(!strcasecmp(var, "vad-debug")) {
+                if(val) globals.fl_vad_debug = switch_true(val);
             } else if(!strcasecmp(var, "default-language")) {
                 if(val) globals.default_language = switch_core_strdup(pool, val);
             } else if(!strcasecmp(var, "model")) {

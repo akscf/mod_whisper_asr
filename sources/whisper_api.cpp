@@ -20,7 +20,7 @@ class WhisperClient {
             if(asr_ctx_ref->samplerate != WHISPER_SAMPLE_RATE) {
                 resampler = speex_resampler_init(asr_ctx_ref->channels, asr_ctx_ref->samplerate, WHISPER_SAMPLE_RATE, SWITCH_RESAMPLE_QUALITY, &err);
                 if(err != 0) {
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Resampler init failed: %s\n", speex_resampler_strerror(err));
+                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Resampler failed: %s\n", speex_resampler_strerror(err));
                     throw std::runtime_error("Couldn't create resampler");
                 }
             }
@@ -29,6 +29,7 @@ class WhisperClient {
             if(whisper_ctx == NULL) {
                 throw std::runtime_error("whisper_ctx == NULL");
             }
+
         }
 
         ~WhisperClient() {
@@ -50,12 +51,16 @@ class WhisperClient {
             switch_status_t status = SWITCH_STATUS_SUCCESS;
             spx_uint32_t out_len = (rsmp_buffer_size / sizeof(int16_t)); // in samples
             spx_uint32_t in_len = (data_len / sizeof(int16_t));          // in samples
+            switch_time_t enc_start_tm =0;
+            switch_time_t enc_end_tm =0;
 
             fl_decoder_active = true;
 
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcriptBuffer: lang=%s, data_len=%u, chunk_time=%u ms, use_parallel=%s, processors=%i, threads=%i\n",
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcriptBuffer: lang=%s, data_len=%u, chunk_time=%u ms, use_parallel=%s, processors=%i, threads=%i, mode=%s\n",
                               asr_ctx_ref->lang, data_len, ((data_len / asr_ctx_ref->frame_len) * asr_ctx_ref->ptime),
-                              (asr_ctx_ref->whisper_use_parallel ? "on" : "off"), asr_ctx_ref->whisper_n_processors, asr_ctx_ref->whisper_n_threads
+                              (asr_ctx_ref->whisper_use_parallel ? "on" : "off"),
+                              asr_ctx_ref->whisper_n_processors, asr_ctx_ref->whisper_n_threads,
+                              basename(globals.model_file)
             );
 
             if(resampler) {
@@ -77,7 +82,6 @@ class WhisperClient {
                     switch_mutex_unlock(asr_ctx_ref->mutex);
                     if(!rsmp_buffer_size || !float_buffer_size) { goto done; }
                 }
-                //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "DEC_RSMP: chunk_buffer_size=%u, rsmp_buffer_size=%u, float_buffer_size=%u\n", asr_ctx_ref->chunk_buffer_size, rsmp_buffer_size, float_buffer_size);
 
                 out_len = (rsmp_buffer_size / sizeof(int16_t));
                 speex_resampler_process_interleaved_int(resampler, (const spx_int16_t *) data, (spx_uint32_t *) &in_len, (spx_int16_t *)rsmp_buffer, &out_len);
@@ -95,8 +99,6 @@ class WhisperClient {
                     switch_mutex_unlock(asr_ctx_ref->mutex);
                     if(!float_buffer_size) { goto done; }
                 }
-
-                //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "DEC_AS-IS: chunk_buffer_size=%u, rsmp_buffer_size=%u, float_buffer_size=%u\n", asr_ctx_ref->chunk_buffer_size, rsmp_buffer_size, float_buffer_size);
 
                 out_len = in_len;
                 conv_i2f((int16_t *)data, (float *)float_buffer, in_len);
@@ -119,7 +121,7 @@ class WhisperClient {
                 wparams.encoder_begin_callback_user_data = asr_ctx_ref;
                 wparams.encoder_begin_callback = (whisper_encoder_begin_callback) WhisperClient::encoder_begin_cb;
 
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "--> whisper-START\n");
+                enc_start_tm = switch_micro_time_now();
 
                 if(asr_ctx_ref->whisper_use_parallel) {
                     if(whisper_full_parallel(whisper_ctx, wparams, (float *)float_buffer, out_len, asr_ctx_ref->whisper_n_processors) != 0) {
@@ -132,8 +134,9 @@ class WhisperClient {
                         goto done;
                     }
                 }
+                enc_end_tm =  switch_micro_time_now();
 
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "--> whisper-END\n");
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "--> whisper-time=%ld msec (%ld sec)\n", (enc_end_tm - enc_start_tm), ((enc_end_tm - enc_start_tm) / 1000000L));
 
                 if(asr_ctx_ref->fl_abort || asr_ctx_ref->fl_destroyed) {
                     goto done;

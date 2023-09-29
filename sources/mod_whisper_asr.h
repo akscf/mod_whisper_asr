@@ -21,11 +21,11 @@
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
-#define VERSION             "1.0 (b3)"
-#define DEF_CHUNK_SIZE      15 // sec
-#define QUEUE_SIZE          32
-#define VAD_STORE_FRAMES    32
-#define VAD_RECOVER_FRAMES  20 // 15
+#define VERSION                 "1.0 (a3)"
+#define DEF_CHUNK_SIZE          15 // sec
+#define QUEUE_SIZE              32
+#define VAD_STORE_FRAMES        32
+#define VAD_RECOVERY_FRAMES     15
 
 #define WHISPER_DEFAULT_THREADS 4
 #define WHISPER_DEFAULT_TOKENS  32
@@ -42,6 +42,7 @@ typedef struct {
     uint32_t                vad_voice_ms;
     uint32_t                vad_threshold;
     uint8_t                 fl_vad_enabled;
+    uint8_t                 fl_vad_debug;
     uint8_t                 fl_shutdown;
     //
     uint32_t                whisper_n_threads;
@@ -65,8 +66,9 @@ typedef struct {
     char                    *lang;
     void                    *whisper_client;
     int32_t                 transcript_results;
-    int32_t                 vad_buffer_ofs;
+    int32_t                 vad_buffer_offs;
     uint32_t                vad_buffer_size;
+    uint32_t                vad_stored_frames;
     uint32_t                chunk_buffer_size;
     uint32_t                deps;
     uint32_t                samplerate;
