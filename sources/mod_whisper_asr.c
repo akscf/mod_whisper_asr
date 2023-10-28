@@ -70,7 +70,7 @@ static void *SWITCH_THREAD_FUNC whisper_io_thread(switch_thread_t *thread, void 
                     break;
                 }
             }
-            xdata_buffer_free(audio_buffer);
+            xdata_buffer_free(&audio_buffer);
         }
         if(!fl_do_transcript) {
             fl_do_transcript = (chunk_buffer_offset > 0 && asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING);
@@ -173,19 +173,25 @@ out:
 
 static switch_status_t asr_close(switch_asr_handle_t *ah, switch_asr_flag_t *flags) {
     wasr_ctx_t *asr_ctx = (wasr_ctx_t *) ah->private_info;
-    int32_t wc = 0;
+    uint8_t fl_wloop = true;
 
     assert(asr_ctx != NULL);
 
     asr_ctx->fl_abort= true;
     asr_ctx->fl_destroyed = true;
-    while(true) {
-        if(asr_ctx->deps <= 0) { break; }
-        if(++wc % 100 == 0) {
-            if(asr_ctx->deps > 0) { switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "asr_ctx is used (deps=%u)!\n", asr_ctx->deps); }
-            wc = 0;
+
+    switch_mutex_lock(asr_ctx->mutex);
+    fl_wloop = (asr_ctx->deps != 0);
+    switch_mutex_unlock(asr_ctx->mutex);
+
+    if(fl_wloop) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Waiting for unlock (deps=%u)!\n", asr_ctx->deps);
+        while(fl_wloop) {
+            switch_mutex_lock(asr_ctx->mutex);
+            fl_wloop = (asr_ctx->deps != 0);
+            switch_mutex_unlock(asr_ctx->mutex);
+            switch_yield(100000);
         }
-        switch_yield(100000);
     }
 
     if(asr_ctx->q_audio) {
@@ -290,7 +296,7 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
             memcpy(tau_buf->data + tdata_len, data, data_len);
 
             if(switch_queue_trypush(asr_ctx->q_audio, tau_buf) != SWITCH_STATUS_SUCCESS) {
-                xdata_buffer_free(tau_buf);
+                xdata_buffer_free(&tau_buf);
             }
 
             asr_ctx->vad_stored_frames = 0;
@@ -325,7 +331,7 @@ static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, s
             switch_zmalloc(result, tbuff->len + 1);
             memcpy(result, tbuff->data, tbuff->len);
         }
-        xdata_buffer_free(tbuff);
+        xdata_buffer_free(&tbuff);
 
         switch_mutex_lock(asr_ctx->mutex);
         if(asr_ctx->transcript_results > 0) asr_ctx->transcript_results--;
@@ -512,12 +518,22 @@ out:
 }
 
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_whisper_asr_shutdown) {
+    uint8_t fl_wloop = true;
 
     globals.fl_shutdown = true;
 
-    while(globals.active_threads > 0) {
-        switch_yield(100000);
-        if(globals.fl_shutdown) { break; }
+    switch_mutex_lock(globals.mutex);
+    fl_wloop = (globals.active_threads > 0);
+    switch_mutex_unlock(globals.mutex);
+
+    if(fl_wloop) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Waiting for termination '%d' threads...\n", globals.active_threads);
+        while(fl_wloop) {
+            switch_mutex_lock(globals.mutex);
+            fl_wloop = (globals.active_threads > 0);
+            switch_mutex_unlock(globals.mutex);
+            switch_yield(100000);
+        }
     }
 
     return SWITCH_STATUS_SUCCESS;

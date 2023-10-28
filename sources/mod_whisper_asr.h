@@ -21,7 +21,7 @@
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
-#define VERSION                 "1.0 (a3)"
+#define VERSION                 "1.0 (a4)"
 #define DEF_CHUNK_SIZE          15 // sec
 #define QUEUE_SIZE              32
 #define VAD_STORE_FRAMES        32
@@ -102,7 +102,7 @@ void thread_launch(switch_memory_pool_t *pool, switch_thread_start_t fun, void *
 
 switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, uint32_t data_len);
 switch_status_t xdata_buffer_alloc(xdata_buffer_t **out, switch_byte_t *data, uint32_t data_len);
-void xdata_buffer_free(xdata_buffer_t *buf);
+void xdata_buffer_free(xdata_buffer_t **buf);
 void xdata_buffer_queue_clean(switch_queue_t *queue);
 
 

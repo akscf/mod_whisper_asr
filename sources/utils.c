@@ -69,21 +69,20 @@ switch_status_t xdata_buffer_alloc(xdata_buffer_t **out, switch_byte_t *data, ui
     return SWITCH_STATUS_SUCCESS;
 }
 
-void xdata_buffer_free(xdata_buffer_t *buf) {
-    if(buf) {
-        switch_safe_free(buf->data);
-        switch_safe_free(buf);
-        buf = NULL;
+void xdata_buffer_free(xdata_buffer_t **buf) {
+    if(buf && *buf) {
+        switch_safe_free((*buf)->data);
+        free(*buf);
     }
 }
 
 void xdata_buffer_queue_clean(switch_queue_t *queue) {
-    void *data = NULL;
+    xdata_buffer_t *data = NULL;
 
     if(!queue || !switch_queue_size(queue)) { return; }
 
-    while(switch_queue_trypop(queue, &data) == SWITCH_STATUS_SUCCESS) {
-        if(data) { xdata_buffer_free((xdata_buffer_t *) data); }
+    while(switch_queue_trypop(queue, (void *) &data) == SWITCH_STATUS_SUCCESS) {
+        if(data) { xdata_buffer_free(&data); }
     }
 }
 
@@ -94,7 +93,7 @@ switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, ui
         if(switch_queue_trypush(queue, buff) == SWITCH_STATUS_SUCCESS) {
             return SWITCH_STATUS_SUCCESS;
         }
-        xdata_buffer_free(buff);
+        xdata_buffer_free(&buff);
     }
     return SWITCH_STATUS_FALSE;
 }
