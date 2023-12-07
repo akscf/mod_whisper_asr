@@ -509,7 +509,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_whisper_asr_load) {
     asr_interface->asr_load_grammar = asr_load_grammar;
     asr_interface->asr_unload_grammar = asr_unload_grammar;
 
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "WhisperASR-%s\n", VERSION);
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "WhisperASR-%s [%s]\n", VERSION, whisper_print_system_info());
 out:
     if(xml) {
         switch_xml_free(xml);

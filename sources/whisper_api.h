@@ -7,6 +7,7 @@
 #define MOD_WHISPER_API_H
 
 #include <switch.h>
+#include "whisper.h"
 
 switch_status_t whisper_client_init(wasr_ctx_t *asr_ctx);
 switch_status_t whisper_client_destroy(wasr_ctx_t *asr_ctx);
