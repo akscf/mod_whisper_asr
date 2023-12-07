@@ -1,9 +1,8 @@
 <p>
-  Freeswitch ASR module based on OpenAI Whisper (it's C++ implementation).
+  Provides offline speech recognition features for the Freeswitch. <br>
+  Was developed just as a gizmo to checking/playing with the Whisper capabilities. <br>
+  Not suitable for production use in this view! (see <a href="https://github.com/akscf/whisperd">whisperd</a> for that case) 
 </p>
-
-### ToDo
- - improve chunks creation (that should give a positive effect with a parallel mode...)
 
 ### Usage example
 ```
