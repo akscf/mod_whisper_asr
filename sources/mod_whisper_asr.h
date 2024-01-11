@@ -21,7 +21,7 @@
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
-#define VERSION                 "1.0 (a4)"
+#define VERSION                 "1.0 (a7)"
 #define DEF_CHUNK_SIZE          15 // sec
 #define QUEUE_SIZE              32
 #define VAD_STORE_FRAMES        32
@@ -59,7 +59,7 @@ typedef struct {
     switch_memory_pool_t    *whisper_thread_memory_pool;
     switch_vad_t            *vad;
     switch_vad_state_t      vad_state;
-    switch_byte_t           *vad_buffer;
+    switch_buffer_t         *vad_buffer;
     switch_mutex_t          *mutex;
     switch_queue_t          *q_audio;
     switch_queue_t          *q_text;
@@ -77,6 +77,7 @@ typedef struct {
     uint32_t                frame_len;
     uint8_t                 fl_pause;
     uint8_t                 fl_vad_enabled;
+    uint8_t                 fl_vad_first_cycle;
     uint8_t                 fl_destroyed;
     uint8_t                 fl_abort;
     //
@@ -105,5 +106,6 @@ switch_status_t xdata_buffer_alloc(xdata_buffer_t **out, switch_byte_t *data, ui
 void xdata_buffer_free(xdata_buffer_t **buf);
 void xdata_buffer_queue_clean(switch_queue_t *queue);
 
+void audio_file_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate);
 
 #endif

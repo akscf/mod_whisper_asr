@@ -98,4 +98,3 @@ switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, ui
     return SWITCH_STATUS_FALSE;
 }
 
-

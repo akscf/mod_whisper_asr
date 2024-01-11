@@ -141,6 +141,7 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
     asr_ctx->vad_buffer = NULL;
     asr_ctx->vad_buffer_size = 0; // will be calculated in the feed stage
     asr_ctx->vad_stored_frames = 0;
+    asr_ctx->fl_vad_first_cycle = true;
 
     if((asr_ctx->vad = switch_vad_init(asr_ctx->samplerate, asr_ctx->channels)) == NULL) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't init VAD\n");
@@ -185,7 +186,7 @@ static switch_status_t asr_close(switch_asr_handle_t *ah, switch_asr_flag_t *fla
     switch_mutex_unlock(asr_ctx->mutex);
 
     if(fl_wloop) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Waiting for unlock (deps=%u)!\n", asr_ctx->deps);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Waiting for unlock (%u locks)!\n", asr_ctx->deps);
         while(fl_wloop) {
             switch_mutex_lock(asr_ctx->mutex);
             fl_wloop = (asr_ctx->deps != 0);
@@ -208,6 +209,10 @@ static switch_status_t asr_close(switch_asr_handle_t *ah, switch_asr_flag_t *fla
 
     if(asr_ctx->whisper_client) {
         whisper_client_destroy(asr_ctx);
+    }
+
+    if(asr_ctx->vad_buffer) {
+        switch_buffer_destroy(&asr_ctx->vad_buffer);
     }
 
     switch_set_flag(ah, SWITCH_ASR_FLAG_CLOSED);
@@ -233,28 +238,31 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
         return SWITCH_STATUS_SUCCESS;
     }
 
+    // getting necessary params
     if(data_len > 0 && asr_ctx->frame_len == 0) {
-        switch_mutex_lock(asr_ctx->mutex);
+        switch_mutex_lock(asr_ctx->mutex);  // lock
         asr_ctx->frame_len = data_len;
         asr_ctx->ptime = (data_len / sizeof(int16_t)) / (asr_ctx->samplerate / 1000);
         asr_ctx->chunk_buffer_size = ((globals.chunk_size_sec * 1000) * data_len) / asr_ctx->ptime;
         asr_ctx->vad_buffer_size = (asr_ctx->frame_len * VAD_STORE_FRAMES);
-        switch_mutex_unlock(asr_ctx->mutex);
+        switch_mutex_unlock(asr_ctx->mutex); // unlock
 
-        if((asr_ctx->vad_buffer = switch_core_alloc(ah->memory_pool, asr_ctx->vad_buffer_size)) == NULL) {
+        if(switch_buffer_create(ah->memory_pool, &asr_ctx->vad_buffer, asr_ctx->vad_buffer_size) != SWITCH_STATUS_SUCCESS) {
             asr_ctx->vad_buffer_size = 0; // force disable
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail (vad_buffer)\n");
         }
-
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "frame_len=%u, ptime=%u, vad_buffer_size=%u, chunk_buffer_size=%u\n", data_len, asr_ctx->ptime, asr_ctx->vad_buffer_size, asr_ctx->chunk_buffer_size);
+        // switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "frame_len=%u, ptime=%u, vad_buffer_size=%u, chunk_buffer_size=%u\n", data_len, asr_ctx->ptime, asr_ctx->vad_buffer_size, asr_ctx->chunk_buffer_size);
     }
 
     if(asr_ctx->fl_vad_enabled && asr_ctx->vad_buffer_size) {
         if(asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING || (asr_ctx->vad_state == vad_state && vad_state == SWITCH_VAD_STATE_NONE)) {
-            if(asr_ctx->frame_len >= data_len) {
-                if(asr_ctx->vad_buffer_offs >= asr_ctx->vad_buffer_size) { asr_ctx->vad_buffer_offs = 0; asr_ctx->vad_stored_frames = 0; }
-                memcpy((void *)(asr_ctx->vad_buffer + asr_ctx->vad_buffer_offs), data, MIN(asr_ctx->frame_len, data_len));
-                asr_ctx->vad_buffer_offs += asr_ctx->frame_len;
+            if(data_len <= asr_ctx->frame_len) {
+                if(asr_ctx->vad_stored_frames >= VAD_STORE_FRAMES) {
+                    switch_buffer_zero(asr_ctx->vad_buffer);
+                    asr_ctx->vad_stored_frames = 0;
+                    asr_ctx->fl_vad_first_cycle = false;
+                }
+                switch_buffer_write(asr_ctx->vad_buffer, data, MIN(asr_ctx->frame_len, data_len));
                 asr_ctx->vad_stored_frames++;
             }
         }
@@ -276,31 +284,54 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
     }
 
     if(fl_has_audio) {
-        if(vad_state == SWITCH_VAD_STATE_START_TALKING && asr_ctx->vad_buffer_offs > 0) {
+        if(vad_state == SWITCH_VAD_STATE_START_TALKING && asr_ctx->vad_stored_frames > 0) {
             xdata_buffer_t *tau_buf = NULL;
-            uint32_t tdata_len = 0;
+            const void *ptr = NULL;
+            switch_size_t vblen = 0;
+            uint32_t rframes = 0, rlen = 0;
+            int ofs = 0;
 
-            if(asr_ctx->vad_stored_frames >= VAD_RECOVERY_FRAMES) { asr_ctx->vad_stored_frames = VAD_RECOVERY_FRAMES; }
+            if((vblen = switch_buffer_peek_zerocopy(asr_ctx->vad_buffer, &ptr)) && ptr && vblen > 0) {
+                rframes = (asr_ctx->vad_stored_frames >= VAD_RECOVERY_FRAMES ? VAD_RECOVERY_FRAMES : (asr_ctx->fl_vad_first_cycle ? asr_ctx->vad_stored_frames : VAD_RECOVERY_FRAMES));
+                rlen = (rframes * asr_ctx->frame_len);
+                ofs = (vblen - rlen);
 
-            asr_ctx->vad_buffer_offs -= (asr_ctx->vad_stored_frames * asr_ctx->frame_len);
-            if(asr_ctx->vad_buffer_offs < 0 ) { asr_ctx->vad_buffer_offs = 0; }
+                if(ofs < 0) {
+                    uint32_t hdr_sz = -ofs;
+                    uint32_t hdr_ofs = (asr_ctx->vad_buffer_size - hdr_sz);
 
-            tdata_len = (asr_ctx->vad_stored_frames * asr_ctx->frame_len) + data_len;
+                    switch_zmalloc(tau_buf, sizeof(xdata_buffer_t));
 
-            switch_zmalloc(tau_buf, sizeof(xdata_buffer_t));
-            switch_malloc(tau_buf->data, tdata_len);
-            tau_buf->len = tdata_len;
+                    tau_buf->len = (hdr_sz + vblen + data_len);
+                    switch_malloc(tau_buf->data, tau_buf->len);
 
-            tdata_len = (asr_ctx->vad_stored_frames * asr_ctx->frame_len);
-            memcpy(tau_buf->data, asr_ctx->vad_buffer + asr_ctx->vad_buffer_offs, tdata_len);
-            memcpy(tau_buf->data + tdata_len, data, data_len);
+                    memcpy(tau_buf->data, (void *)(ptr + hdr_ofs), hdr_sz); // vad + cur_frame
+                    memcpy(tau_buf->data + hdr_sz , (void *)(ptr + 0), vblen);
+                    memcpy(tau_buf->data + rlen, data, data_len);
 
-            if(switch_queue_trypush(asr_ctx->q_audio, tau_buf) != SWITCH_STATUS_SUCCESS) {
-                xdata_buffer_free(&tau_buf);
+                    if(switch_queue_trypush(asr_ctx->q_audio, tau_buf) != SWITCH_STATUS_SUCCESS) {
+                        xdata_buffer_free(&tau_buf);
+                    }
+
+                    switch_buffer_zero(asr_ctx->vad_buffer);
+                    asr_ctx->vad_stored_frames = 0;
+                } else {
+                    switch_zmalloc(tau_buf, sizeof(xdata_buffer_t));
+
+                    tau_buf->len = (rlen + data_len); // vad + cur_frame
+                    switch_malloc(tau_buf->data, tau_buf->len);
+
+                    memcpy(tau_buf->data, (void *)ptr, rlen);
+                    memcpy(tau_buf->data + rlen, data, data_len);
+
+                    if(switch_queue_trypush(asr_ctx->q_audio, tau_buf) != SWITCH_STATUS_SUCCESS) {
+                        xdata_buffer_free(&tau_buf);
+                    }
+
+                    switch_buffer_zero(asr_ctx->vad_buffer);
+                    asr_ctx->vad_stored_frames = 0;
+                }
             }
-
-            asr_ctx->vad_stored_frames = 0;
-            asr_ctx->vad_buffer_offs = 0;
         } else {
             xdata_buffer_push(asr_ctx->q_audio, data, data_len);
         }
