@@ -1,6 +1,5 @@
 /**
  * (C)2023 aks
- * https://akscf.me/
  * https://github.com/akscf/
  **/
 #ifndef MOD_WHISPER_ASR_H

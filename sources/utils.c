@@ -1,6 +1,5 @@
 /**
  * (C)2023 aks
- * https://akscf.me/
  * https://github.com/akscf/
  **/
 #include "mod_whisper_asr.h"
