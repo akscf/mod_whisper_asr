@@ -1,14 +1,3 @@
-```sh
-# using freeswitch packages
-apt update ; apt install libfreeswitch-dev libfreeswitch1 libfreeswitch1-dbg
-cd mod_whisper_asr/sources
-mkdir build
-cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make -j
-make install
-```
-
 <p>
   Provides offline speech recognition features for the Freeswitch. <br>
   Was developed just as a gizmo to checking/playing with the Whisper capabilities. <br>
@@ -44,3 +33,16 @@ make install
 </extension>
 
 ```
+
+```sh
+# using freeswitch packages
+apt update ; apt install libfreeswitch-dev libfreeswitch1 libfreeswitch1-dbg
+cd mod_whisper_asr/sources
+mkdir build
+cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j
+make install
+```
+
+
