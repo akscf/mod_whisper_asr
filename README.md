@@ -9,7 +9,7 @@
  Capable to work with the latest version whisper_cpp (revelant on the date: 12.06.2024) <br>
  Before compile the module, you should build the whisper_cpp as a shared library and (possible) correct it's paths in the Makefile. <br>
  <b>The issues:</b> unfortunately i don't have enough time (now) to deeply dig what is going on, mb it's my mistake somewhere there. <br>
- But have the follogin:
+ But have the follogin (although the same time the whisperd works well):
 ```txt
 2024-06-12 07:34:38.686528 99.73% [NOTICE] utils.c:115 transcribe samples=31360
 terminate called after throwing an instance of 'std::length_error'
