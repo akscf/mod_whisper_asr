@@ -2,10 +2,10 @@
   Provides offline speech recognition features for the Freeswitch based on whisper_cpp. <br>
 </p>
 
-### versin 1.0 
+## versin 1.0 
  Was capable to work with the first versions of whisper_cpp (not longer supported)
 
-### versin 1.1_12062024
+## versin 1.1_12062024
  Capable to work with the latest version whisper_cpp (revelant on the date: 12.06.2024) <br>
  Before compile the module, you should build the whisper_cpp as a shared library and (possible) correct it's paths in the Makefile. <br>
  <b>The issues:</b> unfortunately i don't have enough time (now) to deeply dig what is going on, mb it's my mistake somewhere there. <br>
