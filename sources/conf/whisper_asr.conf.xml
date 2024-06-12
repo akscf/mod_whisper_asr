@@ -1,24 +1,20 @@
 <configuration name="whisper_asr.conf" description="">
   <settings>
-  <!-- <param name="model" value="/opt/whisper/ggml-base.en.bin" /> -->
-    <param name="model" value="/opt/whisper/ggml-small.en.bin" />
-    <param name="default-languale" value="en" />
-    <param name="chunk-size-sec" value="15" />
+    <param name="model" value="/opt/whisper_cpp/models/ggml-model-whisper-small.bin" />
+
+    <param name="audio-chunk-sec" value="15" />
 
     <param name="vad-enable" value="true" />
-    <param name="vad-debug" value="true" />
+    <param name="vad-debug" value="false" />
     <param name="vad-silence-ms" value="500" />
     <param name="vad-voice-ms" value="200" />
     <param name="vad-threshold" value="100" />
 
-    <!-- for x5690 -->
-    <param name="whisper-n-threads" value="20" />
-    <param name="whisper-n-processors" value="4" />
-
-    <param name="whisper-max-tokens" value="32" />
-    <param name="whisper-speed-up" value="false" />
-    <param name="whisper-translate" value="false" />
-    <param name="whisper-use-parallel" value="false" />    
-
+    <param name="whisper-use-gpu" value="false" />
+    <param name="whisper-gpu-dev" value="0" />
+    <param name="whisper-flash-attn" value="false" />
+    <param name="whisper-n-threads" value="16" />
+    <param name="whisper-max-tokens" value="0" />
   </settings>
+
 </configuration>

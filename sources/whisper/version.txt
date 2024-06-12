@@ -1,2 +1,0 @@
-master
-https://github.com/ggerganov/whisper.cpp

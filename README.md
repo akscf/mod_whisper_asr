@@ -1,26 +1,24 @@
 <p>
-  Provides offline speech recognition features for the Freeswitch. <br>
-  Was developed just as a gizmo to checking/playing with the Whisper capabilities. <br>
-  Not suitable for production use in this view! (see <a href="https://github.com/akscf/whisperd">whisperd</a> for that case) <br>
-  <br>
-   
-  <strong>Pay attention on the following: </strong> <br>
-  Seems Freeeswith (or APR) has a trouble with dynamic modules that contains c++ code (haven't investigate it yet deeply). <br>
-  After the first loading you can longer unload it completely! (something still continue keeping it somewhere) <br>
-  It can be repeated (for instance, take the mod_whisper_asr): <br>
-   - load mod_whisper_asr <br>
-   - unload mod_whisper_asr <br>
-   - now, go to the Freeswitch modules dir and delete/move this module away <br>
-   - the following attempt to load this unavailable module will complete with success! <br>
-     there is an only way to solve it - it's reload the Freeswitch <br>
-
-  Got it on: FreeSWITCH Version 1.10.10-release~64bit, but haven't tested on other versions, <br>
-  maybe it's an old and well known bug but I stumbled upon it for the first time in this module (never used c++ with Freeswitch) and I takes me plenty of time to figure out what's going on...<br>
-
+  Provides offline speech recognition features for the Freeswitch based on whisper_cpp. <br>
 </p>
 
-### Usage example
+### versin 1.0 
+ Was capable to work with the first versions of whisper_cpp (not longer supported)
+
+### versin 1.1_12062024
+ Capable to work with the latest version whisper_cpp (revelant on the date: 12.06.2024) <br>
+ Before compile the module, you should build the whisper_cpp as a shared library and (possible) correct it's paths in the Makefile. <br>
+ <b>The issues:</b> unfortunately i don't have enough time (now) to deeply dig what is going on, mb it's my mistake somewhere there. <br>
+ But have the follogin:
+```txt
+2024-06-12 07:34:38.686528 99.73% [NOTICE] utils.c:115 transcribe samples=31360
+terminate called after throwing an instance of 'std::length_error'
+  what():  cannot create std::vector larger than max_size()
+  Aborted (core dumped) ./bin/freeswitch -nf -nonat -nonatmap -nort
 ```
+
+### Usage example
+```xml
 <extension name="asr-tets">
  <condition field="destination_number" expression="^(3222)$">
     <action application="answer"/>
@@ -44,5 +42,4 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j
 make install
 ```
-
 

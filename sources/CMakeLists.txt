@@ -14,10 +14,10 @@ message("FreeSWITCH modules dir: ${FS_MOD_DIR}")
 
 if(CMAKE_BUILD_TYPE MATCHES "Release")
     # Add linker flags to strip symbols and reduce size of static library
-    set_target_properties(PROPERTIES LINK_FLAGS_RELEASE "-s -w") #-static-libgcc -static-libstdc++
+    set_target_properties(PROPERTIES LINK_FLAGS_RELEASE "-s -w -lwhisper") #-static-libgcc -static-libstdc++
 endif()
 
-add_library(mod_whisper_asr SHARED mod_whisper_asr.c mod_whisper_asr.h whisper_api.h whisper_api.cpp utils.c whisper/ggml.h whisper/ggml.c whisper/whisper.h whisper/whisper.cpp)
+add_library(mod_whisper_asr SHARED mod_whisper_asr.c mod_whisper_asr.h utils.c)
 
 set_property(TARGET mod_whisper_asr PROPERTY POSITION_INDEPENDENT_CODE ON)
 

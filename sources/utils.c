@@ -1,6 +1,6 @@
 /**
- * (C)2023 aks
- * https://github.com/akscf/
+ **
+ ** (C)2024 aks
  **/
 #include "mod_whisper_asr.h"
 
@@ -36,7 +36,7 @@ uint32_t asr_ctx_take(wasr_ctx_t *asr_ctx) {
     switch_mutex_lock(asr_ctx->mutex);
     if(asr_ctx->fl_destroyed == false) {
         status = true;
-        asr_ctx->deps++;
+        asr_ctx->refs++;
     }
     switch_mutex_unlock(asr_ctx->mutex);
 
@@ -47,7 +47,7 @@ void asr_ctx_release(wasr_ctx_t *asr_ctx) {
     switch_assert(asr_ctx);
 
     switch_mutex_lock(asr_ctx->mutex);
-    if(asr_ctx->deps) { asr_ctx->deps--; }
+    if(asr_ctx->refs) { asr_ctx->refs--; }
     switch_mutex_unlock(asr_ctx->mutex);
 }
 
@@ -97,3 +97,62 @@ switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, ui
     return SWITCH_STATUS_FALSE;
 }
 
+static bool xxx_whisper_encoder_begin_callback(struct whisper_context *ctx, struct whisper_state *state, void *udata) {
+    wasr_ctx_t *asr_ctx = (wasr_ctx_t *)udata;
+    return(asr_ctx->fl_abort ? false : true);
+}
+
+switch_status_t transcribe(wasr_ctx_t *ast_ctx, float *audio, uint32_t samples, switch_buffer_t *text_buffer) {
+    switch_status_t status = SWITCH_STATUS_SUCCESS;
+    struct whisper_full_params wparams = {0};
+    int segments = 0;
+
+    if(!ast_ctx->wctx) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "(ast_ctx->wctx == NULL)\n");
+        return SWITCH_STATUS_FALSE;
+    }
+
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "transcribe samples=%d\n", samples);
+
+    wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    wparams.print_progress   = false;
+    wparams.print_special    = false;
+    wparams.print_realtime   = false;
+    wparams.print_timestamps = false;
+    wparams.translate        = ast_ctx->whisper_translate;
+    wparams.single_segment   = ast_ctx->whisper_single_segment;
+    wparams.max_tokens       = ast_ctx->whisper_max_tokens;
+    wparams.language         = ast_ctx->lang ? ast_ctx->lang : "en";
+    wparams.n_threads        = globals.whisper_threads;
+    wparams.audio_ctx        = 0;
+
+    wparams.encoder_begin_callback_user_data = ast_ctx;
+    wparams.encoder_begin_callback = (whisper_encoder_begin_callback) xxx_whisper_encoder_begin_callback;
+
+    if(whisper_full(ast_ctx->wctx, wparams, audio, samples) != 0) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "whisper_full()\n");
+        switch_goto_status(SWITCH_STATUS_FALSE, out);
+    }
+
+    if(ast_ctx->fl_abort) {
+        goto out;
+    }
+
+    if((segments = whisper_full_n_segments(ast_ctx->wctx))) {
+        for(uint32_t i = 0; i < segments; ++i) {
+            const char *text = whisper_full_get_segment_text(ast_ctx->wctx, i);
+            if(text) {
+                switch_buffer_write(text_buffer, text, strlen(text));
+                switch_buffer_write(text_buffer, "\n", 1);
+            }
+        }
+    }
+out:
+    return status;
+}
+
+void i2f(int16_t *in, float *out, uint32_t samples) {
+    for(uint32_t i = 0; i < samples; i++) {
+        out[i] = (float) ((in[i] > 0) ? (in[i] / 32767.0) : (in[i] / 32768.0));
+    }
+}
