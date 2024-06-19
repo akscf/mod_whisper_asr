@@ -3,7 +3,6 @@
  ** (C)2024 aks
  **/
 #include "mod_whisper_asr.h"
-#include "whisper_api.h"
 
 globals_t globals;
 

@@ -4,6 +4,7 @@ project(mod_whisper_asr)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_SHARED_LIBRARY_PREFIX "")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g")
+set(CMAKE_INSTALL_RPATH "/usr/local/lib")
 
 #set(ENV{PKG_CONFIG_PATH} "/usr/local/freeswitch/lib/pkgconfig:/usr/local/ssl/lib/pkgconfig/:$ENV{PKG_CONFIG_PATH}")
 
@@ -11,6 +12,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FreeSWITCH REQUIRED IMPORTED_TARGET freeswitch)
 pkg_get_variable(FS_MOD_DIR freeswitch modulesdir)
 message("FreeSWITCH modules dir: ${FS_MOD_DIR}")
+
+add_subdirectory(whisper)
 
 if(CMAKE_BUILD_TYPE MATCHES "Release")
     # Add linker flags to strip symbols and reduce size of static library
@@ -23,6 +26,6 @@ set_property(TARGET mod_whisper_asr PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(mod_whisper_asr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/whisper)
 
-target_link_libraries(mod_whisper_asr PRIVATE PkgConfig::FreeSWITCH pthread)
+target_link_libraries(mod_whisper_asr PRIVATE PkgConfig::FreeSWITCH pthread whisper)
 
 install(TARGETS mod_whisper_asr DESTINATION ${FS_MOD_DIR})
