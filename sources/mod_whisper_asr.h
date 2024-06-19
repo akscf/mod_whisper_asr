@@ -1,28 +1,38 @@
-/**
- * (C)2023 aks
- * https://github.com/akscf/
- **/
+/*
+ * FreeSWITCH Modular Media Switching Software Library / Soft-Switch Application
+ * Copyright (C) 2005-2014, Anthony Minessale II <anthm@freeswitch.org>
+ *
+ * Version: MPL 1.1
+ *
+ * The contents of this file are subject to the Mozilla Public License Version
+ * 1.1 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ * http://www.mozilla.org/MPL/
+ *
+ * Software distributed under the License is distributed on an "AS IS" basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
+ * License.
+ *
+ * Module Contributor(s):
+ *  Konstantin Alexandrin <akscfx@gmail.com>
+ *
+ *
+ */
 #ifndef MOD_WHISPER_ASR_H
 #define MOD_WHISPER_ASR_H
 
 #include <switch.h>
 #include <speex/speex_resampler.h>
-#include <stdint.h>
-#include <string.h>
 #include <whisper.h>
-
-#ifndef true
-#define true SWITCH_TRUE
-#endif
-#ifndef false
-#define false SWITCH_FALSE
-#endif
 
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
-#define VERSION                 "1.1_12062024"
-#define DEF_CHUNK_SIZE          15 // sec
+#define MOD_CONFIG_NAME         "whisper_asr.conf"
+#define MOD_VERSION             "1.1_19062024"
+
+#define DEF_CHUNK_TIME          15 // sec
 #define QUEUE_SIZE              32
 #define VAD_STORE_FRAMES        32
 #define VAD_RECOVERY_FRAMES     15
@@ -31,7 +41,7 @@ typedef struct {
     switch_mutex_t          *mutex;
     const char              *model_file;
     uint32_t                active_threads;
-    uint32_t                chunk_size_sec;
+    uint32_t                chunk_time_sec;
     uint32_t                whisper_threads;
     uint32_t                whisper_tokens;
     uint32_t                vad_silence_ms;
@@ -66,7 +76,6 @@ typedef struct {
     uint32_t                refs;
     uint32_t                samplerate;
     uint32_t                channels;
-    uint32_t                ptime;
     uint32_t                frame_len;
     uint8_t                 fl_pause;
     uint8_t                 fl_vad_enabled;
@@ -87,15 +96,13 @@ typedef struct {
 /* utils.c */
 uint32_t asr_ctx_take(wasr_ctx_t *asr_ctx);
 void asr_ctx_release(wasr_ctx_t *asr_ctx);
-void thread_finished();
-void thread_launch(switch_memory_pool_t *pool, switch_thread_start_t fun, void *data);
 
 switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, uint32_t data_len);
 switch_status_t xdata_buffer_alloc(xdata_buffer_t **out, switch_byte_t *data, uint32_t data_len);
 void xdata_buffer_free(xdata_buffer_t **buf);
 void xdata_buffer_queue_clean(switch_queue_t *queue);
 
-switch_status_t transcribe(wasr_ctx_t *ast_ctx, float *audio, uint32_t samples, switch_buffer_t *text_buffer);
+switch_status_t transcribe(wasr_ctx_t *ast_ctx, float *audio, uint32_t samples, switch_buffer_t *text_buffer, globals_t *globals);
 void i2f(int16_t *in, float *out, uint32_t samples);
 
 #endif
