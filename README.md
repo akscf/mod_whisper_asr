@@ -1,5 +1,6 @@
 <p>
   Provides offline speech recognition features for the Freeswitch based on whisper_cpp. <br>
+  People who are interested in this module, look at <a href="https://github.com/akscf/whisperd">whisperd</a> it'll may be more suitable. 
 </p>
 
 ## version 1.0
